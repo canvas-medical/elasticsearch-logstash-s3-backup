@@ -29,15 +29,6 @@ if [[ "$MAX_DAYS_TO_KEEP" -lt 2 ]]; then
   exit 1
 fi
 
-ES_VERSION=$(curl -sS $DATABASE_URL?format=yaml | grep number | cut -d'"' -f2)
-ES_VERSION_COMPARED_TO_50=$(apk version -t "$ES_VERSION" "4.9")
-
-if [ $ES_VERSION_COMPARED_TO_50 = '<' ]; then
-    REPOSITORY_PLUGIN=cloud-aws
-else
-    REPOSITORY_PLUGIN=repository-s3
-fi
-
 backup_index ()
 {
   : ${1:?"Error: expected index name passed as parameter"}
@@ -47,7 +38,7 @@ backup_index ()
 
   grep -q SUCCESS <(curl -sS ${SNAPSHOT_URL})
   if [ $? -ne 0 ]; then
-    echo "$(now): Scheduling snapshot."
+    echo "$(now): Scheduling snapshot for ${INDEX_NAME}."
     # If the snapshot exists but isn't in a success state, delete it so that we can try again.
     grep -qE "FAILED|PARTIAL|IN_PROGRESS" <(curl -sS ${SNAPSHOT_URL}) && curl -sS -XDELETE ${SNAPSHOT_URL}
     # Indexes have to be open for snapshots to work.
@@ -66,38 +57,18 @@ backup_index ()
   curl -w "\n" -sS -XDELETE ${INDEX_URL}
 }
 
-# Ensure that Elasticsearch has the cloud-aws plugin.
-grep -q $REPOSITORY_PLUGIN <(curl -sS ${DATABASE_URL}/_cat/plugins)
-if [ $? -ne 0 ]; then
-  echo "$(now): Elasticsearch server does not have the ${REPOSITORY_PLUGIN} plugin installed. Exiting."
-  exit 1
-fi
-
-echo "$(now): Ensuring Elasticsearch snapshot repository ${REPOSITORY_NAME} exists..."
-curl -H "Content-Type: application/json" -w "\n" -sS -XPUT ${REPOSITORY_URL} -d "{
-  \"type\": \"s3\",
-  \"settings\": {
-    \"bucket\" : \"${S3_BUCKET}\",
-    \"base_path\": \"${S3_BUCKET_BASE_PATH}\",
-    \"access_key\": \"${S3_ACCESS_KEY_ID}\",
-    \"secret_key\": \"${S3_SECRET_ACCESS_KEY}\",
-    \"protocol\": \"https\",
-    \"server_side_encryption\": true
-  }
-}"
-
 CUTOFF_DATE=$(date --date="${MAX_DAYS_TO_KEEP} days ago" +"%Y.%m.%d")
 echo "$(now) Archiving all indexes with logs before ${CUTOFF_DATE}."
-SUBSTITUTION='s/.*\(logstash-[0-9\.]\{10\}\).*/\1/'
+SUBSTITUTION='s/.*\(logstash-[0-9]\{4\}\.[0-9]\{2\}\.[0-9]\{2\}-[0-9]*\).*/\1/'
 for index_name in $(curl -sS ${DATABASE_URL}/_cat/indices | grep logstash- | sed $SUBSTITUTION | sort); do
-  if [[ "${index_name:9}" < "${CUTOFF_DATE}" ]]; then
+  if [[ "${index_name:9:10}" < "${CUTOFF_DATE}" ]]; then
     echo "$(now): Ensuring ${index_name} is archived..."
-      backup_index ${index_name}
-      if [ $? -eq 0 ]; then
-        echo "$(now): ${index_name} archived."
-      else
-        echo "$(now): ${index_name} archival failed."
-      fi
+    backup_index ${index_name}
+    if [ $? -eq 0 ]; then
+      echo "$(now): ${index_name} archived."
+    else
+      echo "$(now): ${index_name} archival failed."
+    fi
   fi
 done
 echo "$(now): Finished archiving."
