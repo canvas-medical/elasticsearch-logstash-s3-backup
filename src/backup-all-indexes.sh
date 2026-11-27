@@ -18,16 +18,23 @@ DATABASE_URL="${DATABASE_URL%/}"
 REPOSITORY_NAME=${REPOSITORY_NAME:-logstash_snapshots}
 WAIT_SECONDS=${WAIT_SECONDS:-1800}
 MAX_DAYS_TO_KEEP=${MAX_DAYS_TO_KEEP:-30}
+# Each entry is <index prefix>:<days to keep live>. An index named
+# <prefix>-YYYY.MM.DD or <prefix>-YYYY.MM.DD-N is archived and deleted once its
+# date is more than that many days ago.
+ARCHIVE_INDEXES=${ARCHIVE_INDEXES:-"logstash:${MAX_DAYS_TO_KEEP} siem-audit:90"}
 REPOSITORY_URL=${DATABASE_URL}/_snapshot/${REPOSITORY_NAME}
 
 # Ensure that we don't delete indices that are being logged. Using 1 should
 # actually be fine here as long as everyone's on the same timezone, but let's
 # be safe and require at least 2 days.
-if [[ "$MAX_DAYS_TO_KEEP" -lt 2 ]]; then
-  echo "$(now): MAX_DAYS_TO_KEEP must be an integer >= 2."
-  echo "$(now): Using lower values may break archiving."
-  exit 1
-fi
+for entry in ${ARCHIVE_INDEXES}; do
+  days="${entry##*:}"
+  if [[ "${entry}" != *:* || ! "${days}" =~ ^[0-9]+$ || "${days}" -lt 2 ]]; then
+    echo "$(now): ARCHIVE_INDEXES entry '${entry}' must be <prefix>:<days>, days an integer >= 2."
+    echo "$(now): Using lower values may break archiving."
+    exit 1
+  fi
+done
 
 backup_index ()
 {
@@ -57,18 +64,29 @@ backup_index ()
   curl -w "\n" -sS -XDELETE ${INDEX_URL}
 }
 
-CUTOFF_DATE=$(date --date="${MAX_DAYS_TO_KEEP} days ago" +"%Y.%m.%d")
-echo "$(now) Archiving all indexes with logs before ${CUTOFF_DATE}."
-SUBSTITUTION='s/.*\(logstash-[0-9]\{4\}\.[0-9]\{2\}\.[0-9]\{2\}-[0-9]*\).*/\1/'
-for index_name in $(curl -sS ${DATABASE_URL}/_cat/indices | grep logstash- | sed $SUBSTITUTION | sort); do
-  if [[ "${index_name:9:10}" < "${CUTOFF_DATE}" ]]; then
-    echo "$(now): Ensuring ${index_name} is archived..."
-    backup_index ${index_name}
-    if [ $? -eq 0 ]; then
-      echo "$(now): ${index_name} archived."
-    else
-      echo "$(now): ${index_name} archival failed."
+for entry in ${ARCHIVE_INDEXES}; do
+  prefix="${entry%:*}"
+  days="${entry##*:}"
+  CUTOFF_DATE=$(date --date="${days} days ago" +"%Y.%m.%d")
+  echo "$(now) Archiving all ${prefix} indexes with logs before ${CUTOFF_DATE}."
+  # Fail the run rather than read an error body as an empty list of indexes.
+  index_names=$(curl --fail -sS "${DATABASE_URL}/_cat/indices/${prefix}-*?h=index") || {
+    echo "$(now): Listing ${prefix} indexes failed."
+    exit 1
+  }
+  for index_name in $(echo "${index_names}" | sort); do
+    if [[ ! "${index_name}" =~ ^${prefix}-([0-9]{4}\.[0-9]{2}\.[0-9]{2})(-[0-9]+)?$ ]]; then
+      continue
     fi
-  fi
+    if [[ "${BASH_REMATCH[1]}" < "${CUTOFF_DATE}" ]]; then
+      echo "$(now): Ensuring ${index_name} is archived..."
+      backup_index ${index_name}
+      if [ $? -eq 0 ]; then
+        echo "$(now): ${index_name} archived."
+      else
+        echo "$(now): ${index_name} archival failed."
+      fi
+    fi
+  done
 done
 echo "$(now): Finished archiving."

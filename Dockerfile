@@ -1,5 +1,5 @@
-FROM quay.io/aptible/alpine:latest
-RUN apk update && apk-install coreutils curl
+FROM alpine:3.24
+RUN apk add --no-cache bash coreutils curl
 
 ENV SUPERCRONIC_URL=https://github.com/aptible/supercronic/releases/download/v0.1.2/supercronic-linux-amd64 \
     SUPERCRONIC=supercronic-linux-amd64 \

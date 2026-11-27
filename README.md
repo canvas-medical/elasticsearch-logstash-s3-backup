@@ -80,6 +80,10 @@ Recommended setup for running as an app on Aptible:
      * `MAX_DAYS_TO_KEEP`: The number of days of live logstash indexes you'd
        like to keep in your Elasticsearch instance. Any indexes from before this
        point will be archived by the cron. Defaults to 30.
+     * `ARCHIVE_INDEXES`: Space-separated `<index prefix>:<days>` entries, one
+       per index family to archive. An index named `<prefix>-YYYY.MM.DD` or
+       `<prefix>-YYYY.MM.DD-N` is archived once its date is more than that
+       many days ago. Defaults to `logstash:$MAX_DAYS_TO_KEEP siem-audit:90`.
      * `CRON_SCHEDULE`: The schedule for your backups. Defaults to "0 2 * * *",
        which runs nightly at 2 A.M. Make sure to escape any asterisks when
        setting this variable from the command line to avoid shell expansion.
